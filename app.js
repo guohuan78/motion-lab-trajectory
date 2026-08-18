@@ -315,17 +315,11 @@
     state.dpr = Math.min(devicePixelRatio || 1, 2);
     canvas.width = Math.round(physW * state.dpr);
     canvas.height = Math.round(physH * state.dpr);
-    // 分屏对比绑定横屏、单屏显示绑定竖屏：窗口方向与所属模式不符时，
-    // 整个界面按 90° 旋转渲染（等同系统自动旋转），输入坐标反向映射。
-    const wantPortrait = state.mode !== MODE_SPLIT;
-    state.rotated = wantPortrait !== (physH >= physW);
-    state.width = state.rotated ? physH : physW;
-    state.height = state.rotated ? physW : physH;
-    if (state.rotated) {
-      ctx.setTransform(0, state.dpr, -state.dpr, 0, physW * state.dpr, 0);
-    } else {
-      ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
-    }
+    // 布局直接适配视口方向：竖屏视口用竖屏布局，横屏视口用横屏布局
+    state.rotated = false;
+    state.width = physW;
+    state.height = physH;
+    ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
     ctx.imageSmoothingEnabled = true;
     state.portrait = state.height > state.width;
     state.unit = state.portrait
@@ -754,11 +748,7 @@
 
   function toLocal(e) {
     const rect = canvas.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const py = e.clientY - rect.top;
-    // 旋转渲染时把物理指针坐标反映射回逻辑坐标
-    if (state.rotated) return { x: py, y: rect.width - px };
-    return { x: px, y: py };
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
 
   const hit = (r, p) => r && p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
@@ -833,7 +823,6 @@
       if (hit(tab, p)) {
         if (state.mode !== tab.mode) {
           state.mode = tab.mode;
-          resize(); // 模式切换同步切换绑定方向
         }
         resetTimeline();
         return;
