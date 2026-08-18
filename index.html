@@ -17,7 +17,7 @@
     <script>
       // ES5 内联报错浮层：在 app.js 之前装载，即使 app.js 解析失败也能显示错误
       (function () {
-        var shown = false;
+        window.__motionLabBoot = { scriptLoaded: false, firstFrame: false };
         function show(msg) {
           var el = document.getElementById("motionlab-error");
           if (!el) {
@@ -27,16 +27,25 @@
             document.body.appendChild(el);
           }
           el.textContent += msg + "\n";
-          shown = true;
         }
+        window.__motionLabShowError = show;
         window.addEventListener("error", function (e) {
           show((e && e.message ? e.message : "error") + " @" + (e && e.lineno ? e.lineno : 0));
         });
         window.addEventListener("unhandledrejection", function (e) {
           show("reject: " + String(e && e.reason ? e.reason : "?"));
         });
+        window.setTimeout(function () {
+          var boot = window.__motionLabBoot;
+          if (document.hidden || (boot && boot.firstFrame)) return;
+          show(
+            "初始化未完成：script=" + (boot && boot.scriptLoaded ? "ok" : "missing")
+            + ", viewport=" + (window.innerWidth || 0) + "x" + (window.innerHeight || 0)
+            + ", ua=" + navigator.userAgent
+          );
+        }, 3000);
       })();
     </script>
-    <script src="./app.js?v=2" defer></script>
+    <script src="./app.js?v=3" defer onerror="window.__motionLabShowError &amp;&amp; window.__motionLabShowError('app.js 加载失败')"></script>
   </body>
 </html>

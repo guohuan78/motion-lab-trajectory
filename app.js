@@ -1,6 +1,9 @@
 (() => {
   "use strict";
 
+  // 由 index.html 的 ES5 启动监控读取；只有完整绘制完首帧才标记 ready。
+  if (window.__motionLabBoot) window.__motionLabBoot.scriptLoaded = true;
+
   // 轨迹场景网页版：移植自 android-sync-demo/singlecompare165 的
   // SingleCompareView.java（drawFigureEightScene / renderInteractiveTrace /
   // sampledSeconds / 速度滑杆 / 玻璃控件），仅保留「轨迹」场景。
@@ -104,7 +107,10 @@
   }
 
   function hGradient(x0, x1, colors, alpha) {
-    const key = `h${Math.round(x0)},${Math.round(x1)},${colors.flat().join(".")},${alpha}`;
+    // Array.prototype.flat() 直到 Chromium 69 才提供；微信 X5 的 Chromium 57
+    // 会在首帧选中态绘制时直接抛错，页面因此只剩预渲染的黑色背景。
+    const colorKey = colors.map((color) => color.join(".")).join("_");
+    const key = `h${Math.round(x0)},${Math.round(x1)},${colorKey},${alpha}`;
     let g = gradientCache.get(key);
     if (!g) {
       g = ctx.createLinearGradient(x0, 0, x1, 0);
@@ -740,6 +746,8 @@
         `${real ? "实机" : "模拟"}${rate}Hz`, true, real ? 0 : rate
       );
     }
+
+    if (window.__motionLabBoot) window.__motionLabBoot.firstFrame = true;
 
     requestAnimationFrame(frame);
   }
