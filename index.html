@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#050308" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>165Hz 轨迹对比</title>
+  </head>
+  <body>
+    <canvas id="stage" aria-label="轨迹场景：分屏对比不同刷新率下的拖尾密度，单屏模式可切换帧率、拖动光点"></canvas>
+    <noscript>此演示需要启用 JavaScript。</noscript>
+    <script>
+      // ES5 内联报错浮层：在 app.js 之前装载，即使 app.js 解析失败也能显示错误
+      (function () {
+        var shown = false;
+        function show(msg) {
+          var el = document.getElementById("motionlab-error");
+          if (!el) {
+            el = document.createElement("div");
+            el.id = "motionlab-error";
+            el.setAttribute("style", "position:fixed;left:8px;top:8px;right:8px;z-index:9999;color:#ff8a8a;background:rgba(0,0,0,0.85);font:12px/1.5 monospace;padding:8px;border-radius:6px;white-space:pre-wrap;word-break:break-all;");
+            document.body.appendChild(el);
+          }
+          el.textContent += msg + "\n";
+          shown = true;
+        }
+        window.addEventListener("error", function (e) {
+          show((e && e.message ? e.message : "error") + " @" + (e && e.lineno ? e.lineno : 0));
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          show("reject: " + String(e && e.reason ? e.reason : "?"));
+        });
+      })();
+    </script>
+    <script src="./app.js" defer></script>
+  </body>
+</html>
