@@ -318,7 +318,7 @@
     // 分屏对比绑定横屏、单屏显示绑定竖屏：窗口方向与所属模式不符时，
     // 整个界面按 90° 旋转渲染（等同系统自动旋转），输入坐标反向映射。
     const wantPortrait = state.mode !== MODE_SPLIT;
-    state.rotated = wantPortrait === (physH >= physW);
+    state.rotated = wantPortrait !== (physH >= physW);
     state.width = state.rotated ? physH : physW;
     state.height = state.rotated ? physW : physH;
     if (state.rotated) {
