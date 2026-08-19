@@ -128,7 +128,10 @@ body {
   const css = (c, a = 255) => `rgba(${c[0]},${c[1]},${c[2]},${(Math.max(0, Math.min(255, a)) / 255).toFixed(3)})`;
 
   const canvas = document.getElementById("stage");
-  const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
+  // 不启用 desynchronized：部分 ColorOS/OPPO 系统浏览器会返回可用的
+  // 2D context，但低延迟缓冲区没有被合成到 GitHub Pages 页面，结果整屏黑色。
+  // 保留不透明画布以减少混合开销，同时走兼容性更好的标准合成路径。
+  const ctx = canvas.getContext("2d", { alpha: false });
 
   const state = {
     width: 1,
