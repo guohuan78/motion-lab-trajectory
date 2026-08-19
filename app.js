@@ -55,7 +55,8 @@
   // 不启用 desynchronized：部分 ColorOS/OPPO 系统浏览器会返回可用的
   // 2D context，但低延迟缓冲区没有被合成到 GitHub Pages 页面，结果整屏黑色。
   // 保留不透明画布以减少混合开销，同时走兼容性更好的标准合成路径。
-  const ctx = canvas.getContext("2d", { alpha: false });
+  // let 而非 const：renderUICache 需要临时把 ctx 切换到离屏画布上下文。
+  let ctx = canvas.getContext("2d", { alpha: false });
 
   const state = {
     width: 1,
@@ -91,6 +92,12 @@
     sliderDragging: false,
     rects: { chips: [], modes: [], slider: null, content: null, panels: [] },
     bg: null,
+    // 静态 UI 离屏缓存：控件和面板边框不随帧变化，只在状态变更时重渲染，
+    // 避免 165Hz 下每帧全量绘制玻璃/渐变/文字导致掉帧。
+    uiCacheCanvas: null,
+    uiDirty: true,
+    layoutDirty: true,
+    lastRenderedHz: 0,
   };
 
   const gradientCache = new Map();
@@ -336,6 +343,8 @@
       : Math.min(state.width / 873, state.height / 393);
     gradientCache.clear();
     guideCache.clear();
+    state.layoutDirty = true;
+    state.uiDirty = true;
     prerenderBackground();
   }
 
@@ -526,9 +535,47 @@
     ctx.fill();
   }
 
-  // ---------- 面板与轨迹场景（drawPanel / drawFigureEightScene） ----------
+  // ---------- 静态 UI 离屏缓存 ----------
 
-  function drawPanel(rect, seconds, pointFps, lowerRate, title, interactive, simFps = 0) {
+  function renderUICache() {
+    const w = state.width;
+    const h = state.height;
+    const dpr = state.dpr;
+    if (!state.uiCacheCanvas) {
+      state.uiCacheCanvas = document.createElement("canvas");
+    }
+    const uc = state.uiCacheCanvas;
+    uc.width = Math.round(w * dpr);
+    uc.height = Math.round(h * dpr);
+
+    const mainCtx = ctx;
+    gradientCache.clear();
+    ctx = uc.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.clearRect(0, 0, w, h);
+
+    drawControls();
+
+    if (state.mode === MODE_SPLIT) {
+      const hz = state.measuredHz || FALLBACK_HZ;
+      const panels = state.rects.panels;
+      drawPanelChrome(panels[0], "模拟" + state.splitFps + "Hz", true);
+      drawPanelChrome(panels[1], "实机" + hzText() + "Hz", false);
+    } else {
+      const rate = effectiveSingleRate();
+      const real = rate === (state.measuredHz || FALLBACK_HZ);
+      drawPanelChrome(state.rects.panels[0], (real ? "实机" : "模拟") + rate + "Hz", !real);
+    }
+
+    gradientCache.clear();
+    ctx = mainCtx;
+  }
+
+  // ---------- 面板与轨迹场景 ----------
+
+  // 静态部分：玻璃面板 + 标题 + 分隔线 + 引导路径（缓存到离屏画布）
+  function drawPanelChrome(rect, title, lowerRate) {
     const u = state.unit;
     const accentA = lowerRate ? ORANGE_A : BLUE_A;
     const accentB = lowerRate ? ORANGE_B : BLUE_B;
@@ -552,11 +599,80 @@
     ctx.beginPath();
     ctx.rect(rect.x + u, rect.y + 40 * u, rect.w - 2 * u, rect.h - 45 * u);
     ctx.clip();
-    drawFigureEight(
-      rect.x + 5 * u, rect.y + 40 * u, rect.w - 10 * u, rect.h - 45 * u,
-      seconds, pointFps, interactive, accentA, accentB, simFps
-    );
+
+    const l = rect.x + 5 * u;
+    const t = rect.y + 40 * u;
+    const w = rect.w - 10 * u;
+    const h = rect.h - 45 * u;
+    const cx = l + w / 2;
+    const cy = t + h * 0.48;
+    const rx = w * 0.34;
+    const ry = h * 0.32;
+
+    ctx.strokeStyle = css(MUTED, 22);
+    ctx.lineWidth = 0.8 * u;
+    ctx.stroke(guidePath(cx, cy, rx, ry));
+
     ctx.restore();
+  }
+
+  // 动态部分：拖尾 + 光点（每帧绘制）
+  function drawPanelTrail(rect, seconds, pointFps, interactive, lowerRate, simFps) {
+    const u = state.unit;
+    const accentA = lowerRate ? ORANGE_A : BLUE_A;
+    const accentB = lowerRate ? ORANGE_B : BLUE_B;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rect.x + u, rect.y + 40 * u, rect.w - 2 * u, rect.h - 45 * u);
+    ctx.clip();
+
+    const l = rect.x + 5 * u;
+    const t = rect.y + 40 * u;
+    const w = rect.w - 10 * u;
+    const h = rect.h - 45 * u;
+    const cx = l + w / 2;
+    const cy = t + h * 0.48;
+    const rx = w * 0.34;
+    const ry = h * 0.32;
+    const orbitX = (s) => cx + Math.sin(s * TRACE_X_SPEED) * rx;
+    const orbitY = (s) => cy + Math.sin(s * TRACE_Y_SPEED) * ry * 0.72;
+
+    if (interactive) {
+      renderInteractiveTrace(seconds, cx, cy, orbitX, orbitY, accentA, accentB, simFps);
+    } else {
+      drawAnalyticTrail(seconds, pointFps, orbitX, orbitY, accentA, accentB);
+    }
+
+    ctx.restore();
+  }
+
+  // 分屏面板：按面板帧率解析采样拖尾（与 Android 非交互分支一致）
+  function drawAnalyticTrail(seconds, pointFps, orbitX, orbitY, accentA, accentB) {
+    const u = state.unit;
+    const samples = Math.max(2, Math.round((TRACE_TRAIL_MS / 1000) * pointFps));
+    ctx.strokeStyle = css(accentB, 92);
+    ctx.lineWidth = 2.4 * u;
+    ctx.beginPath();
+    for (let i = samples - 1; i >= 0; i -= 1) {
+      const ts = seconds - (i * state.speed) / pointFps;
+      const x = orbitX(ts);
+      const y = orbitY(ts);
+      if (i === samples - 1) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    for (let i = samples - 1; i >= 0; i -= 1) {
+      const ts = seconds - (i * state.speed) / pointFps;
+      const progress = (samples - i) / samples;
+      ctx.fillStyle = css(accentB, 18 + Math.round(progress * 230));
+      ctx.beginPath();
+      ctx.arc(orbitX(ts), orbitY(ts), (2.2 + progress * 2.6) * u, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    drawHead(orbitX(seconds), orbitY(seconds), accentA);
   }
 
   function guidePath(cx, cy, rx, ry) {
@@ -594,50 +710,6 @@
     ctx.beginPath();
     ctx.arc(x, y, 2.2 * u, 0, Math.PI * 2);
     ctx.fill();
-  }
-
-  function drawFigureEight(l, t, w, h, seconds, pointFps, interactive, accentA, accentB, simFps = 0) {
-    const u = state.unit;
-    const cx = l + w / 2;
-    const cy = t + h * 0.48;
-    const rx = w * 0.34;
-    const ry = h * 0.32;
-    const orbitX = (s) => cx + Math.sin(s * TRACE_X_SPEED) * rx;
-    const orbitY = (s) => cy + Math.sin(s * TRACE_Y_SPEED) * ry * 0.72;
-
-    ctx.strokeStyle = css(MUTED, 22);
-    ctx.lineWidth = 0.8 * u;
-    ctx.stroke(guidePath(cx, cy, rx, ry));
-
-    if (interactive) {
-      renderInteractiveTrace(seconds, cx, cy, orbitX, orbitY, accentA, accentB, simFps);
-      return;
-    }
-
-    // 分屏面板：按面板帧率解析采样拖尾（与 Android 非交互分支一致）
-    const samples = Math.max(2, Math.round((TRACE_TRAIL_MS / 1000) * pointFps));
-    ctx.strokeStyle = css(accentB, 92);
-    ctx.lineWidth = 2.4 * u;
-    ctx.beginPath();
-    for (let i = samples - 1; i >= 0; i -= 1) {
-      const ts = seconds - (i * state.speed) / pointFps;
-      const x = orbitX(ts);
-      const y = orbitY(ts);
-      if (i === samples - 1) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-
-    for (let i = samples - 1; i >= 0; i -= 1) {
-      const ts = seconds - (i * state.speed) / pointFps;
-      const progress = (samples - i) / samples;
-      ctx.fillStyle = css(accentB, 18 + Math.round(progress * 230));
-      ctx.beginPath();
-      ctx.arc(orbitX(ts), orbitY(ts), (2.2 + progress * 2.6) * u, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    drawHead(orbitX(seconds), orbitY(seconds), accentA);
   }
 
   function renderInteractiveTrace(seconds, cx, cy, orbitX, orbitY, accentA, accentB, simFps = 0) {
@@ -729,25 +801,41 @@
 
   function frame(ts) {
     measureHz(ts);
-    layout();
-    ctx.drawImage(state.bg, 0, 0, state.width, state.height);
-    drawControls();
 
+    if (state.layoutDirty) {
+      layout();
+      state.layoutDirty = false;
+      state.uiDirty = true;
+    }
+
+    // 实测刷新率变化时更新面板标题（如"实机165Hz"）
+    if (state.measuredHz !== state.lastRenderedHz) {
+      state.lastRenderedHz = state.measuredHz;
+      state.uiDirty = true;
+    }
+
+    if (state.uiDirty) {
+      renderUICache();
+      state.uiDirty = false;
+    }
+
+    // 快速合成：背景 + 缓存UI（两次 drawImage，GPU 加速）
+    ctx.drawImage(state.bg, 0, 0, state.width, state.height);
+    ctx.drawImage(state.uiCacheCanvas, 0, 0, state.width, state.height);
+
+    // 每帧只画动态轨迹
     if (state.mode === MODE_SPLIT) {
       const hz = state.measuredHz || FALLBACK_HZ;
-      const [lower, higher] = state.rects.panels;
-      drawPanel(lower, sampledSeconds(ts, state.splitFps), state.splitFps, true, `模拟${state.splitFps}Hz`, false);
-      drawPanel(higher, sampledSeconds(ts, hz), hz, false, `实机${hzText()}Hz`, false);
+      const panels = state.rects.panels;
+      drawPanelTrail(panels[0], sampledSeconds(ts, state.splitFps), state.splitFps, false, true, 0);
+      drawPanelTrail(panels[1], sampledSeconds(ts, hz), hz, false, false, 0);
     } else {
       // 选中档等于实测 = 实机渲染（连续时间轴 + 每帧拖尾）；
       // 低于实测 = 模拟渲染（时间量化 + 按该帧率节流采样，观感等同物理降频）
       const rate = effectiveSingleRate();
       const real = rate === (state.measuredHz || FALLBACK_HZ);
       const seconds = real ? timelineSeconds(ts) : sampledSeconds(ts, rate);
-      drawPanel(
-        state.rects.panels[0], seconds, real ? 0 : rate, !real,
-        `${real ? "实机" : "模拟"}${rate}Hz`, true, real ? 0 : rate
-      );
+      drawPanelTrail(state.rects.panels[0], seconds, real ? 0 : rate, true, !real, real ? 0 : rate);
     }
 
     if (window.__motionLabBoot) window.__motionLabBoot.firstFrame = true;
@@ -770,7 +858,9 @@
     const raw = MIN_SPEED * Math.pow(MAX_SPEED / MIN_SPEED, progress);
     let snapped = Math.round(raw * 20) / 20;
     if (Math.abs(snapped - DEFAULT_SPEED) <= 0.03) snapped = DEFAULT_SPEED;
-    setSpeed(clamp(snapped, MIN_SPEED, MAX_SPEED));
+    const clamped = clamp(snapped, MIN_SPEED, MAX_SPEED);
+    if (Math.abs(clamped - state.speed) > 1e-4) state.uiDirty = true;
+    setSpeed(clamped);
   }
 
   canvas.addEventListener("pointerdown", (e) => {
@@ -834,6 +924,8 @@
       if (hit(tab, p)) {
         if (state.mode !== tab.mode) {
           state.mode = tab.mode;
+          state.layoutDirty = true;
+          state.uiDirty = true;
         }
         resetTimeline();
         return;
@@ -842,7 +934,10 @@
     if (state.mode === MODE_SPLIT) {
       for (const chip of state.rects.chips) {
         if (hit(chip, p)) {
-          state.splitFps = chip.rate;
+          if (state.splitFps !== chip.rate) {
+            state.splitFps = chip.rate;
+            state.uiDirty = true;
+          }
           resetTimeline();
           return;
         }
@@ -852,7 +947,10 @@
       for (const chip of state.rects.chips) {
         if (hit(chip, p)) {
           if (chip.rate > measured) return; // 超出实测的档位不可选
-          state.singleFps = chip.rate;
+          if (state.singleFps !== chip.rate) {
+            state.singleFps = chip.rate;
+            state.uiDirty = true;
+          }
           resetTimeline();
           return;
         }
